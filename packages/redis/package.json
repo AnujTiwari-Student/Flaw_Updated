@@ -1,0 +1,23 @@
+{
+  "name": "@repo/redis",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/prisma": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^22.15.3"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.35.3",
+    "dotenv": "^17.2.1"
+  },
+  "exports": {
+    "./client": "./src/index.ts"
+  }
+}

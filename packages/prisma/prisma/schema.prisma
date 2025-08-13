@@ -1,0 +1,1128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuthenticUserRole {
+  admin
+  user
+  invitedUser
+  moderator
+  superadmin
+}
+
+enum Visibility {
+  public
+  private
+  unlisted
+  team_only
+  organization_only
+}
+
+enum TwoFactorMethodType {
+  TOTP
+  SMS
+  SECURITY_KEY
+  EMAIL_CODE
+}
+
+enum ComponentType {
+  button
+  input
+  card
+  header
+  footer
+  navigation
+  text
+  image
+  container
+  form
+  custom
+}
+
+model BaseAudit {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy String?
+  updatedBy String?
+  version   Int      @default(1) // For optimistic locking
+
+  @@map("base_audit")
+}
+
+model Role {
+  id           String       @id @default(cuid())
+  name         String       @unique // super_admin, admin, moderator, user, viewer
+  description  String?
+  isSystemRole Boolean      @default(false) // Prevents deletion of core roles
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  users        User[]
+  permissions  Permission[] @relation("RolePermissions")
+
+  @@index([name])
+}
+
+model Permission {
+  id          String  @id @default(cuid())
+  name        String  @unique // manage_users, create_workspace, delete_project, etc.
+  resource    String // user, workspace, project, billing, system
+  action      String // create, read, update, delete, manage
+  description String?
+
+  roles Role[] @relation("RolePermissions")
+
+  @@index([resource, action])
+}
+
+model ProjectRole {
+  id              String              @id @default(cuid())
+  name            String              @unique // owner, admin, editor, viewer, reviewer
+  description     String?
+  isSystemRole    Boolean             @default(false)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  permissions     ProjectPermission[] @relation("ProjectRolePermissions")
+  members         ProjectMember[]
+  WorkspaceMember WorkspaceMember[]
+
+  @@index([name])
+}
+
+model ProjectPermission {
+  id          String  @id @default(cuid())
+  name        String  @unique // edit_project, view_project, manage_members, etc.
+  resource    String // project, member, version, comment
+  action      String // create, read, update, delete, manage
+  description String?
+
+  roles ProjectRole[] @relation("ProjectRolePermissions")
+
+  @@index([resource, action])
+}
+
+model VisibilitySettings {
+  id                  String     @id @default(cuid())
+  projectId           String     @unique
+  visibility          Visibility @default(public)
+  allowedDomains      String[] // For organization_only
+  allowedUserIds      String[] // Specific users who can access
+  allowedWorkspaceIds String[] // Specific workspaces
+  requiresPassword    Boolean    @default(false)
+  passwordHash        String? // Changed from password to passwordHash
+  passwordSalt        String? // Added for security
+  allowGuests         Boolean    @default(true)
+  allowComments       Boolean    @default(true)
+  allowDownload       Boolean    @default(true)
+  allowFork           Boolean    @default(true)
+  allowEmbedding      Boolean    @default(true)
+  expiresAt           DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([visibility])
+  @@index([visibility, projectId])
+  @@index([allowedUserIds])
+  @@index([expiresAt])
+}
+
+model RateLimit {
+  id          String   @id @default(cuid())
+  userId      String?
+  ipAddress   String?
+  endpoint    String
+  requests    Int      @default(1)
+  windowStart DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, endpoint, windowStart])
+  @@unique([ipAddress, endpoint, windowStart])
+  @@index([windowStart]) // For cleanup
+  @@index([userId, endpoint])
+  @@index([ipAddress, endpoint])
+}
+
+model FeatureFlag {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  isEnabled   Boolean  @default(false)
+  description String?
+  userIds     String[] // Specific users
+  percentage  Int      @default(0) // Rollout percentage
+  conditions  Json? // Complex conditions
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([name, isEnabled])
+  @@index([isEnabled])
+}
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  keyHash     String    @unique // Store hashed key
+  permissions String[] // Scoped permissions
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([keyHash])
+  @@index([expiresAt, isActive])
+  @@index([userId, isActive])
+}
+
+model Webhook {
+  id            String    @id @default(cuid())
+  userId        String
+  url           String
+  events        String[] // Array of event types to listen for
+  secret        String? // For webhook signature verification
+  isActive      Boolean   @default(true)
+  lastTriggered DateTime?
+  failureCount  Int       @default(0)
+  maxRetries    Int       @default(3)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+model WebhookDelivery {
+  id           String    @id @default(cuid())
+  webhookId    String
+  event        String
+  payload      Json
+  status       String // pending, success, failed
+  responseCode Int?
+  responseBody String?
+  attempts     Int       @default(0)
+  createdAt    DateTime  @default(now())
+  deliveredAt  DateTime?
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SystemConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  isSecret    Boolean  @default(false)
+  updatedBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([key])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String  @map("user_id")
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model User {
+  id                         String                   @id @default(cuid())
+  email                      String                   @unique @db.VarChar(255)
+  username                   String                   @unique @db.VarChar(50)
+  name                       String?
+  password                   String?
+  bio                        String?                  @db.Text
+  createdAt                  DateTime                 @default(now())
+  emailVerified              DateTime?                @map("email_verified")
+  image                      String?                  @map("profile_picture")
+  isTwoFactorEnabled         Boolean                  @default(false) @map("is_two_factor_enabled")
+  twoFactorSecret            String?                  @map("two_factor_secret")
+  recoveryCodes              String[]                 @map("recovery_codes")
+  lastSeen                   DateTime?
+  status                     String                   @default("active")
+  isDeleted                  Boolean                  @default(false)
+  deletedAt                  DateTime?
+  successorId                String?                  @unique
+  primaryEmail               String?                  @unique
+  default2faMethod           String?
+  hasSeenRecoveryCodes       Boolean                  @default(false)
+  totpSecret                 String?
+  totpIV                     String?
+  followersCount             Int                      @default(0)
+  followingCount             Int                      @default(0)
+  totpTag                    String?
+  roleId                     String?
+  hasPassword                Boolean                  @default(false)
+  hasActiveSuccessor         Boolean                  @default(false)
+  successorNotifiedAt        DateTime?
+  adminProfile               AdminProfile?
+  superAdminProfile          SuperAdminProfile?
+  userProfile                UserProfile?
+  moderatorProfile           ModeratorProfile?
+  successor                  Successor?               @relation("UserToSuccessor", fields: [successorId], references: [id])
+  Role                       Role?                    @relation(fields: [roleId], references: [id])
+  followers                  Follow[]                 @relation("UserFollowers")
+  role                       AuthenticUserRole        @default(user)
+  following                  Follow[]                 @relation("UserFollowing")
+  configuredTwoFactorMethods TwoFactorMethod[]
+  Accounts                   Account[]
+  version                    Version[]
+  projectMember              ProjectMember[]
+  project                    Project[]                @relation("ProjectOwner")
+  projectStars               ProjectStar[]
+  lastModifiedProjects       Project[]                @relation("LastModifiedUser")
+  verifiedEmails             VerifiedEmails[]
+  userAuditLogs              UserAuditLog[]
+  ProjectAuditLog            ProjectAuditLog[]
+  AuthLog                    AuthLog[]
+  NotificationPreference     NotificationPreference[]
+  Subscription               Subscription[]
+  PaymentInformation         PaymentInformation[]
+  PaymentHistory             PaymentHistory[]
+  workspaceOwned             Workspace[]              @relation("WorkspaceOwner")
+  workspaceMember            WorkspaceMember[]
+  comments                   Comment[]
+  activities                 Activity[]
+  securityEvents             SecurityEvent[]
+  usage                      Usage[]
+  rateLimits                 RateLimit[]
+  apiKeys                    ApiKey[]
+  webhooks                   Webhook[]
+  VerificationToken          VerificationToken[]
+  Notification               Notification[]
+  Achievements               Achievements[]
+  UserStats                  UserStats?
+  Blocker                    Block[]                  @relation("UserBlocking")
+  Blocked                    Block[]                  @relation("UserBlocked")
+
+  @@index([email, username])
+  @@index([email, status])
+  @@index([username, isDeleted])
+  @@index([createdAt, roleId])
+  @@index([lastSeen])
+  @@index([status])
+  @@index([isDeleted])
+  @@index([successorId, hasActiveSuccessor])
+  @@index([roleId])
+  @@map("users")
+}
+
+model AdminProfile {
+  id                 String    @id @default(cuid())
+  userId             String    @unique
+  department         String?
+  employeeId         String?
+  canManageUsers     Boolean   @default(true)
+  canManageBilling   Boolean   @default(false)
+  canAccessAnalytics Boolean   @default(true)
+  workspaceLimit     Int?
+  adminLevel         String    @default("standard") // standard, senior
+  lastAdminAction    DateTime?
+  adminNotes         String?   @db.Text
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([department])
+  @@index([adminLevel])
+}
+
+model SuperAdminProfile {
+  id                      String    @id @default(cuid())
+  userId                  String    @unique
+  systemPermissions       String[] // Array of system-level permissions
+  canModifyRoles          Boolean   @default(true)
+  canAccessSystemLogs     Boolean   @default(true)
+  canManageInfrastructure Boolean   @default(true)
+  emergencyContactInfo    Json?
+  lastSystemAction        DateTime?
+  systemAlerts            Boolean   @default(true)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserProfile {
+  id                       String   @id @default(cuid())
+  userId                   String   @unique
+  company                  String?
+  linkedinUrl              String?
+  githubUrl                String?
+  portfolioUrl             String?
+  socialUrl1               String?
+  socialUrl2               String?
+  url                      String?
+  location                 String?
+  publicEmail              String?
+  designExperience         String? // beginner, intermediate, expert, professional
+  preferredTools           String[] // figma, sketch, adobe, etc.
+  specializations          String[] // ui, ux, branding, illustration
+  contributionCount        Int      @default(0)
+  publicProjectCount       Int      @default(0)
+  privateProjectCount      Int      @default(0)
+  isProfilePrivate         Boolean  @default(false)
+  hideActivity             Boolean  @default(false)
+  showPrivateContributions Boolean  @default(true)
+  jobAvailability          Boolean  @default(false)
+  hourlyRate               Float?
+  currency                 String   @default("USD")
+  timezone                 String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([designExperience])
+  @@index([jobAvailability])
+  @@index([company])
+}
+
+model TwoFactorMethod {
+  id                   String    @id @default(cuid())
+  userId               String
+  isEnabled            Boolean   @default(true)
+  secret               String?
+  phoneNumber          String?
+  emailAddress         String?
+  webAuthnCredentialId String?   @unique
+  webAuthnPublicKey    String?   @db.Text
+  webAuthnCounter      BigInt?
+  webAuthnTransports   String[]
+  label                String?
+  createdAt            DateTime  @default(now())
+  lastUsedAt           DateTime?
+
+  methodType TwoFactorMethodType
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, webAuthnCredentialId], name: "UserWebAuthnUnique")
+  @@unique([userId, methodType], name: "UserIdMethodTypeUnique")
+  @@index([userId, methodType])
+}
+
+model ModeratorProfile {
+  id                   String    @id @default(cuid())
+  userId               String    @unique
+  moderatorType        String // content, community, support
+  canDeleteProjects    Boolean   @default(false)
+  canBanUsers          Boolean   @default(false)
+  canManageReports     Boolean   @default(true)
+  assignedCategories   String[] // Which areas they moderate
+  moderationCount      Int       @default(0)
+  lastModerationAction DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([moderatorType])
+}
+
+model Workspace {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  ownerId     String
+  plan        String    @default("free")
+  settings    Json?
+  isDeleted   Boolean   @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  owner    User              @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members  WorkspaceMember[]
+  projects Project[]
+
+  @@index([slug])
+  @@index([ownerId])
+  @@index([plan])
+  @@index([isDeleted])
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  roleId      String?
+  joinedAt    DateTime @default(now())
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      ProjectRole? @relation(fields: [roleId], references: [id])
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([roleId])
+}
+
+model Successor {
+  id                   String    @id @default(cuid())
+  email                String?
+  username             String
+  image                String?
+  canDownloadProjects  Boolean   @default(false) // Can download all projects
+  canDownloadProfile   Boolean   @default(true) // Can download profile data
+  canDownloadComments  Boolean   @default(false) // Can download comments/activity
+  canDownloadAssets    Boolean   @default(false) // Can download uploaded assets
+  canViewAnalytics     Boolean   @default(false) // Can view usage analytics
+  // Successor Management
+  isActive             Boolean   @default(true) // Can be deactivated
+  accessExpiresAt      DateTime? // Optional expiry for access
+  lastAccessedAt       DateTime? // Track when successor last accessed data
+  notifiedAt           DateTime?
+  dataPackageGenerated Boolean   @default(false) // Has data package been created
+  dataPackageUrl       String? // S3/CDN URL to download package
+  dataPackageExpiresAt DateTime? // When download link expires
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user                 User[]                 @relation("UserToSuccessor")
+  SuccessorDataRequest SuccessorDataRequest[]
+
+  @@index([username])
+  @@index([isActive])
+  @@index([accessExpiresAt])
+  @@index([dataPackageGenerated])
+}
+
+model SuccessorDataRequest {
+  id            String    @id @default(cuid())
+  successorId   String
+  userId        String // Original user ID
+  requestType   String // 'full_export', 'projects_only', 'profile_only'
+  status        String // 'pending', 'processing', 'completed', 'failed'
+  requestedData String[] // Array of data types requested
+  generatedUrl  String? // Download URL when ready
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  successor Successor @relation(fields: [successorId], references: [id])
+
+  @@index([successorId])
+  @@index([userId])
+  @@index([status])
+}
+
+model UserAuditLog {
+  id          String   @id @default(cuid())
+  userId      String
+  email       String
+  username    String
+  action      String
+  projectId   String?
+  projectName String?
+  timestamp   DateTime @default(now())
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  location    String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, timestamp])
+  @@index([action, timestamp])
+}
+
+model ArchivedUser {
+  id                        String    @id @default(cuid())
+  originalUserId            String    @map("original_user_id")
+  email                     String
+  username                  String
+  name                      String?
+  password                  String?
+  bio                       String?   @db.Text
+  createdAt                 DateTime
+  emailVerified             DateTime? @map("email_verified")
+  image                     String?   @map("profile_picture")
+  isTwoFactorEnabled        Boolean   @default(false) @map("is_two_factor_enabled")
+  twoFactorSecret           String?   @map("two_factor_secret")
+  recoveryCodes             String[]  @map("recovery_codes")
+  company                   String?
+  linkedinUrl               String?
+  githubUrl                 String?
+  socialUrl1                String?
+  socialUrl2                String?
+  url                       String?
+  location                  String?
+  publicEmail               String?
+  isProfilePrivate          Boolean   @default(false)
+  hideActivity              Boolean   @default(false)
+  showPrivateContributions  Boolean   @default(true)
+  lastSeen                  DateTime?
+  contributionCount         Int       @default(0)
+  publicProjectCount        Int       @default(0)
+  privateProjectCount       Int       @default(0)
+  status                    String    @default("active")
+  profileLastUpdated        DateTime? @default(now())
+  jobAvailability           Boolean   @default(false)
+  isDeleted                 Boolean   @default(false)
+  successorId               String?
+  primaryEmail              String?   @unique
+  default2faMethod          String?
+  hasSeenRecoveryCodes      Boolean   @default(false)
+  totpSecret                String?
+  totpIV                    String?
+  totpTag                   String?
+  roleId                    String?
+  hasActiveSuccessor        Boolean   @default(false) // New field from User
+  successorNotifiedAt       DateTime? // New field from User
+  // Archive-specific fields
+  deletedAt                 DateTime  @default(now())
+  deletionReason            String?
+  deletedByAdmin            Boolean   @default(false)
+  ipAddress                 String?
+  userAgent                 String?
+  archivedAt                DateTime  @default(now())
+  // Store which profiles the user had (as JSON since relations don't work in archived data)
+  hadAdminProfile           Boolean   @default(false)
+  hadSuperAdminProfile      Boolean   @default(false)
+  hadUserProfile            Boolean   @default(false)
+  hadModeratorProfile       Boolean   @default(false)
+  // Archived profile data (as JSON)
+  archivedAdminProfile      Json? // AdminProfile data
+  archivedSuperAdminProfile Json? // SuperAdminProfile data
+  archivedUserProfile       Json? // UserProfile data
+  archivedModeratorProfile  Json? // ModeratorProfile data
+
+  role AuthenticUserRole @default(user)
+
+  @@index([email])
+  @@index([username])
+  @@index([deletedAt])
+  @@index([originalUserId])
+  @@index([successorId])
+  @@index([hadUserProfile]) // For successor constraint validation
+}
+
+model VerifiedEmails {
+  id         String   @id @default(cuid())
+  userId     String
+  email      String?  @unique
+  verified   Boolean  @default(false)
+  verifiedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  isExpired  Boolean  @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, email])
+  @@index([email, userId])
+}
+
+model Project {
+  id                  String    @id @default(cuid())
+  name                String
+  ownerId             String
+  description         String?
+  updatedAt           DateTime  @updatedAt
+  createdAt           DateTime  @default(now())
+  lastModifiedBy      String?
+  forkedFromProjectId String?
+  isTemplate          Boolean   @default(false)
+  previewImage        String?
+  thumbnails          String[] // Multiple preview images
+  dimensions          Json? // Canvas dimensions, responsive breakpoints
+  colorPalette        String[] // Project color scheme
+  fonts               String[]
+  isDeleted           Boolean   @default(false)
+  deletedAt           DateTime?
+  workspaceId         String?
+  templateId          String?
+
+  visibility         Visibility          @default(public)
+  owner              User                @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  lastModifiedByUser User?               @relation("LastModifiedUser", fields: [lastModifiedBy], references: [id], onDelete: SetNull)
+  forkedFrom         Project?            @relation("ForkedFrom", fields: [forkedFromProjectId], references: [id])
+  workspace          Workspace?          @relation(fields: [workspaceId], references: [id])
+  template           Project?            @relation("ProjectTemplate", fields: [templateId], references: [id])
+  visibilitySettings VisibilitySettings?
+
+  forkedProjects    Project[]         @relation("ForkedFrom")
+  templatedProjects Project[]         @relation("ProjectTemplate")
+  ProjectMember     ProjectMember[]
+  version           Version[]
+  Tag               Tag[]
+  projectStars      ProjectStar[]
+  ProjectAuditLog   ProjectAuditLog[]
+  components        Component[]
+  comments          Comment[]
+  activities        Activity[]
+  usage             Usage[]
+
+  @@index([ownerId])
+  @@index([workspaceId])
+  @@index([visibility])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@index([name])
+  @@index([isTemplate])
+  @@index([templateId])
+  @@index([ownerId, visibility, createdAt])
+  @@index([workspaceId, updatedAt])
+  @@index([name, visibility])
+  @@index([isDeleted])
+  @@index([createdAt, id]) // For pagination
+  @@index([updatedAt, id]) // For sorting by update time
+  @@index([ownerId, createdAt, id]) // For user's projects
+}
+
+model ProjectMember {
+  id        String   @id @default(cuid())
+  userId    String
+  projectId String
+  roleId    String?
+  createdAt DateTime @default(now())
+
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  role    ProjectRole? @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, projectId])
+  @@index([roleId])
+  @@index([userId, roleId])
+}
+
+model ProjectStar {
+  id        String   @id @default(cuid())
+  userId    String
+  projectId String
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([projectId])
+  @@index([userId])
+}
+
+model Version {
+  id            String    @id @default(cuid())
+  projectId     String
+  name          String
+  versionNumber String // v1.0.0, v1.0.1, etc.
+  parentId      String? // For branching
+  isPublished   Boolean   @default(false)
+  publishedAt   DateTime?
+  changelogMd   String?   @db.Text // Markdown changelog
+  createdAt     DateTime  @default(now())
+  createdBy     String?
+  data          Json
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user     User?     @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+  parent   Version?  @relation("VersionBranch", fields: [parentId], references: [id])
+  branches Version[] @relation("VersionBranch")
+  assets   Asset[]
+  comments Comment[]
+
+  @@index([projectId, versionNumber])
+  @@index([isPublished])
+  @@index([projectId, createdAt])
+}
+
+model Asset {
+  id        String   @id @default(cuid())
+  versionId String
+  filename  String
+  filesize  Int
+  mimetype  String
+  url       String // CDN URL
+  hash      String // File hash for deduplication
+  metadata  Json? // Image dimensions, etc.
+  createdAt DateTime @default(now())
+
+  version Version @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([hash]) // For deduplication
+  @@index([versionId])
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  projectId String
+  versionId String?
+  userId    String
+  content   String   @db.Text
+  position  Json? // x, y coordinates for design feedback
+  resolved  Boolean  @default(false)
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version Version?  @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent  Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentReplies")
+
+  @@index([projectId, createdAt])
+  @@index([versionId, resolved])
+  @@index([userId])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  userId    String
+  projectId String?
+  type      String // created, updated, commented, starred, forked, etc.
+  metadata  Json
+  createdAt DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([type, createdAt])
+  @@index([userId, createdAt, id]) // For pagination
+  @@index([projectId, createdAt, id])
+}
+
+model Usage {
+  id        String   @id @default(cuid())
+  userId    String
+  projectId String?
+  action    String // view, edit, export, etc.
+  timestamp DateTime @default(now())
+  metadata  Json?
+  duration  Int? // Time spent in milliseconds
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, timestamp])
+  @@index([action, timestamp])
+  @@index([projectId, timestamp])
+}
+
+model ProjectAuditLog {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String?
+  action    String
+  timestamp DateTime @default(now())
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  location  String?
+  reason    String?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([timestamp])
+}
+
+model ArchivedProject {
+  id                String   @id @default(cuid())
+  originalId        String
+  name              String
+  ownerId           String
+  description       String?
+  createdAt         DateTime
+  deletedAt         DateTime @default(now())
+  deletionReason    String?
+  deletedById       String?
+  deletedByUsername String?
+  ipAddress         String?
+  userAgent         String?
+
+  visibility Visibility
+
+  @@index([originalId])
+  @@index([deletedAt])
+  @@index([ownerId])
+}
+
+model Component {
+  id         String    @id @default(cuid())
+  projectId  String
+  name       String
+  properties Json // Component properties/styles
+  isShared   Boolean   @default(false) // Can be used across projects
+  version    String    @default("1.0.0")
+  isDeleted  Boolean   @default(false)
+  deletedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  type    ComponentType
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, type])
+  @@index([isShared])
+  @@index([projectId, isDeleted])
+}
+
+model Tag {
+  id        String @id @default(cuid())
+  name      String
+  color     String
+  projectId String
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@index([projectId])
+}
+
+model AuthLog {
+  id            String   @id @default(cuid())
+  userId        String
+  event         String
+  status        String
+  timestamp     DateTime @default(now())
+  ipAddress     String?
+  userAgent     String?
+  location      String?
+  failureReason String?
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([timestamp])
+  @@index([event, status])
+}
+
+model NotificationPreference {
+  id               String   @id @default(cuid())
+  userId           String
+  notificationType String // watching, forking, commenting, etc.
+  email            Boolean  @default(true)
+  push             Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  user             User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, notificationType])
+  @@index([userId])
+  @@index([notificationType])
+}
+
+model Subscription {
+  id                   String    @id @default(cuid())
+  userId               String
+  stripeCustomerId     String
+  stripeSubscriptionId String
+  plan                 String    @default("free")
+  startedAt            DateTime  @default(now())
+  endsAt               DateTime
+  isTrial              Boolean   @default(false)
+  trialEndsAt          DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([plan])
+}
+
+model PaymentInformation {
+  id         String   @id @default(cuid())
+  userId     String
+  firstName  String
+  lastName   String
+  address    String
+  city       String
+  state      String
+  postalCode String
+  country    String
+  gstId      String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  PaymentHistory PaymentHistory[]
+
+  @@index([userId])
+}
+
+model PaymentHistory {
+  id             String   @id @default(cuid())
+  userId         String
+  amount         Float
+  currency       String   @default("INR")
+  description    String?
+  paymentInfoId  String? // nullable if paid via external means
+  status         String // e.g., 'success', 'failed', 'pending'
+  stripeChargeId String? // optional if using Stripe
+  createdAt      DateTime @default(now())
+
+  user               User                @relation(fields: [userId], references: [id])
+  paymentInformation PaymentInformation? @relation(fields: [paymentInfoId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model SecurityEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  eventType String // login_attempt, permission_change, etc.
+  severity  String // low, medium, high, critical
+  details   Json
+  ipAddress String?
+  userAgent String?
+  location  String?
+  timestamp DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([eventType, timestamp])
+  @@index([severity, timestamp])
+  @@index([userId, timestamp])
+}
+
+model VerificationToken {
+  identifier String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  email      String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([email, token])
+  @@unique([userId])
+}
+
+model Notification {
+  id          String               @id @default(cuid())
+  createdAt   DateTime             @default(now())
+  type        String // e.g., "new_follower", "new_comment", etc.
+  title       String
+  message     String
+  isRead      Boolean              @default(false)
+  readAt      DateTime?
+  isDelivered Boolean              @default(false)
+  deliveredAt DateTime?
+  data        Json?
+  actionUrl   String?
+  userId      String
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  priority    NotificationPriority @default(NORMAL)
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+  @@index([priority])
+  @@index([userId, isRead])
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Achievements {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  description String
+  points      Int
+  icons       String
+  date        DateTime @default(now())
+  category    String? // Optional: e.g., "Profile", "Activity"
+  tier        String? // Optional: e.g., "Bronze", "Silver", "Gold"
+  isPublic    Boolean  @default(true) // Default to public visibility
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, name])
+}
+
+model Follow {
+  id           String    @id @default(cuid())
+  followerId   String
+  follower     User      @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId  String
+  following    User      @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  unfollowedAt DateTime?
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+  @@index([createdAt])
+  @@map("follows")
+}
+
+model UserStats {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  followersCount   Int      @default(0)
+  followingCount   Int      @default(0)
+  postsCount       Int      @default(0)
+  likesCount       Int      @default(0)
+  weeklyFollowers  Int      @default(0)
+  monthlyFollowers Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  @@map("user_stats")
+}
+
+model Block {
+  id        String   @id @default(cuid())
+  blockerId String
+  blocker   User     @relation("UserBlocking", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedId String
+  blocked   User     @relation("UserBlocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@index([blockedId])
+  @@map("blocks")
+}
